@@ -30,6 +30,18 @@ The offline engine isn't a keyword-matched string bank either — it computes se
 
 The left panel accepts a **CSV upload** (`zone,capacity,waitMinutes,headcount`). A judge can drop in their own numbers and the reasoning panel will respond to them directly — this isn't limited to pre-baked demo scenarios. `sample-data.csv` is included for a one-click way to see it work end to end.
 
+## Live crowd map
+
+Zone data renders as an interactive SVG map around a stadium pitch — color and a pulse animation reflect live severity (normal/elevated/critical), computed from the same thresholds the reasoning engine uses. Clicking a zone on the map selects it in the report form, so a volunteer can report by pointing rather than typing a zone name.
+
+## Shift memory — this isn't a stateless chatbot
+
+Every report you submit is checked against the shift log: if the same zone has already been reported in the last 15 minutes, the AI is told the repeat count and is explicitly instructed to **escalate its recommendation** rather than repeat the same advice (e.g. "radio your supervisor" instead of "open a second lane" on a 2nd+ report of the same problem). The last few reports are also passed as conversation history, so the assistant isn't reasoning about each message in isolation — it's reasoning about a shift in progress. This is visible in the UI as a running chat, not a single-shot form.
+
+## End-of-shift AI summary
+
+A second reasoning contract (`SHIFT OVERVIEW → KEY INCIDENTS → PATTERNS DETECTED → HANDOFF RECOMMENDATION`) synthesizes the *entire* shift log into a handoff brief for the next volunteer/coordinator — including explicitly calling out any zone that was reported more than once as a real pattern, not noise. This demonstrates the AI reasoning over aggregated data across a whole session, not just per-message.
+
 ## Tech stack
 
 - Pure HTML5 / CSS3 / vanilla ES6 JS — no build step, no framework, deploys straight to GitHub Pages via the included Actions workflow.
@@ -48,7 +60,7 @@ The left panel accepts a **CSV upload** (`zone,capacity,waitMinutes,headcount`).
 ## Testing
 
 - `tests.html` — browser test runner (open directly, no server needed).
-- `tests.js` — 27 tests, weighted toward edge cases per SME feedback (empty CSV, malformed rows, non-numeric values, boundary thresholds, empty form submission) rather than only the happy path. Also runnable headless: `node tests.js`.
+- `tests.js` — 38 tests, weighted toward edge cases per SME feedback (empty CSV, malformed rows, non-numeric values, boundary thresholds, empty form submission, repeat-report detection, shift-summary edge cases) rather than only the happy path. Also runnable headless: `node tests.js`.
 
 ## Accessibility
 

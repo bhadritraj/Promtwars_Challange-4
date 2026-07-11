@@ -88,6 +88,22 @@ const AppCore = {
     return this.logEntries[0];
   },
 
+  /**
+   * Counts prior reports on the same zone within the given window (minutes),
+   * excluding the current one being composed. This is what makes the AI
+   * "remember" the shift instead of treating every message as isolated.
+   */
+  getRecentReportsForZone(zoneName, withinMinutes = 15, now = new Date()) {
+    if (!zoneName) return 0;
+    const cutoff = now.getTime() - withinMinutes * 60000;
+    return this.logEntries.filter(e => e.zone === zoneName && e.ts.getTime() >= cutoff).length;
+  },
+
+  /** Last N log entries formatted for passing to the AI as conversation history. */
+  getRecentHistory(count = 3) {
+    return this.logEntries.slice(0, count).map(e => ({ text: e.text, zone: e.zone, severity: e.severity }));
+  },
+
   /** Determine severity purely from data, used by both UI and tests. */
   classifySeverity(capacity, waitMinutes) {
     let severity = 'normal';
@@ -129,10 +145,15 @@ if (typeof document !== 'undefined') {
       reportForm: document.getElementById('reportForm'),
       reportInput: document.getElementById('reportInput'),
       formError: document.getElementById('formError'),
-      responseArea: document.getElementById('responseArea'),
+      conversation: document.getElementById('conversation'),
       submitReport: document.getElementById('submitReport'),
       shiftLog: document.getElementById('shiftLog'),
-      logCount: document.getElementById('logCount')
+      logCount: document.getElementById('logCount'),
+      summaryBtn: document.getElementById('summaryBtn'),
+      summaryPanel: document.getElementById('summaryPanel'),
+      summaryContent: document.getElementById('summaryContent'),
+      stadiumMap: document.getElementById('stadiumMap'),
+      mapHint: document.querySelector('.map-hint')
     };
 
     // ---- Theme ----
@@ -169,7 +190,107 @@ if (typeof document !== 'undefined') {
     }
     updateModeBadge();
 
-    // ---- CSV upload ----
+    function escapeHtml(s) {
+      const d = document.createElement('div');
+      d.textContent = String(s);
+      return d.innerHTML;
+    }
+
+    // ---- Live Stadium Map (SVG) ----
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+    let selectedZone = '';
+
+    function layoutPositions(count) {
+      // Evenly distribute zones on an ellipse around a central "pitch".
+      const cx = 300, cy = 170, rx = 240, ry = 120;
+      const positions = [];
+      for (let i = 0; i < count; i++) {
+        const angle = (2 * Math.PI * i) / count - Math.PI / 2;
+        positions.push({ x: cx + rx * Math.cos(angle), y: cy + ry * Math.sin(angle) });
+      }
+      return positions;
+    }
+
+    function renderStadiumMap() {
+      const names = Object.keys(AppCore.zones);
+      const svg = els.stadiumMap;
+      svg.innerHTML = '';
+
+      // Pitch
+      const pitch = document.createElementNS(SVG_NS, 'ellipse');
+      pitch.setAttribute('cx', '300'); pitch.setAttribute('cy', '170');
+      pitch.setAttribute('rx', '150'); pitch.setAttribute('ry', '70');
+      pitch.setAttribute('fill', 'none');
+      pitch.setAttribute('stroke', 'var(--border)');
+      pitch.setAttribute('stroke-width', '2');
+      pitch.setAttribute('stroke-dasharray', '4 4');
+      svg.appendChild(pitch);
+
+      if (!names.length) {
+        els.mapHint.textContent = 'No data loaded — showing placeholder layout.';
+        const placeholder = document.createElementNS(SVG_NS, 'text');
+        placeholder.setAttribute('x', '300'); placeholder.setAttribute('y', '175');
+        placeholder.setAttribute('text-anchor', 'middle');
+        placeholder.setAttribute('fill', 'var(--text-dim)');
+        placeholder.setAttribute('font-size', '13');
+        placeholder.textContent = 'Load zone data to populate the map';
+        svg.appendChild(placeholder);
+        return;
+      }
+      els.mapHint.textContent = `${names.length} zone(s) live.`;
+
+      const positions = layoutPositions(names.length);
+      names.forEach((name, i) => {
+        const z = AppCore.zones[name];
+        const sev = AppCore.classifySeverity(z.capacity, z.waitMinutes);
+        const pos = positions[i];
+
+        const g = document.createElementNS(SVG_NS, 'g');
+        g.setAttribute('class', `zone-node sev-${sev}${name === selectedZone ? ' selected' : ''}`);
+        g.setAttribute('tabindex', '0');
+        g.setAttribute('role', 'button');
+        g.setAttribute('aria-label', `${name}, ${sev} severity, capacity ${z.capacity ?? 'unknown'} percent. Click to report on this zone.`);
+
+        if (sev === 'critical') {
+          const pulse = document.createElementNS(SVG_NS, 'circle');
+          pulse.setAttribute('class', 'pulse');
+          pulse.setAttribute('cx', pos.x); pulse.setAttribute('cy', pos.y); pulse.setAttribute('r', '20');
+          g.appendChild(pulse);
+        }
+
+        const circle = document.createElementNS(SVG_NS, 'circle');
+        circle.setAttribute('class', 'base');
+        circle.setAttribute('cx', pos.x); circle.setAttribute('cy', pos.y); circle.setAttribute('r', '26');
+        g.appendChild(circle);
+
+        const label = document.createElementNS(SVG_NS, 'text');
+        label.setAttribute('class', 'zlabel');
+        label.setAttribute('x', pos.x); label.setAttribute('y', pos.y - 2);
+        label.setAttribute('text-anchor', 'middle');
+        label.textContent = name.length > 12 ? name.slice(0, 11) + '…' : name;
+        g.appendChild(label);
+
+        const val = document.createElementNS(SVG_NS, 'text');
+        val.setAttribute('class', 'zval');
+        val.setAttribute('x', pos.x); val.setAttribute('y', pos.y + 11);
+        val.setAttribute('text-anchor', 'middle');
+        val.textContent = z.capacity !== undefined ? `${z.capacity}%` : '—';
+        g.appendChild(val);
+
+        function activate() {
+          els.zoneForReport.value = name;
+          selectedZone = name;
+          renderStadiumMap();
+          els.reportInput.focus();
+        }
+        g.addEventListener('click', activate);
+        g.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate(); } });
+
+        svg.appendChild(g);
+      });
+    }
+
+    // ---- CSV upload / zone table ----
     function renderZoneTable() {
       const names = Object.keys(AppCore.zones);
       els.zoneForReport.innerHTML = '<option value="">Select zone (optional)</option>' +
@@ -177,25 +298,20 @@ if (typeof document !== 'undefined') {
 
       if (!names.length) {
         els.zoneTableBody.innerHTML = '<tr><td colspan="4" class="empty-row">No data loaded yet — load sample data or upload a CSV.</td></tr>';
-        return;
+      } else {
+        els.zoneTableBody.innerHTML = names.map(n => {
+          const z = AppCore.zones[n];
+          const sev = AppCore.classifySeverity(z.capacity, z.waitMinutes);
+          const capClass = sev === 'critical' ? 'cap-high' : sev === 'elevated' ? 'cap-mid' : 'cap-ok';
+          return `<tr>
+            <td>${escapeHtml(n)}</td>
+            <td class="${capClass}">${z.capacity !== undefined ? z.capacity + '%' : '—'}</td>
+            <td>${z.waitMinutes !== undefined ? z.waitMinutes + ' min' : '—'}</td>
+            <td>${z.headcount !== undefined ? z.headcount : '—'}</td>
+          </tr>`;
+        }).join('');
       }
-      els.zoneTableBody.innerHTML = names.map(n => {
-        const z = AppCore.zones[n];
-        const sev = AppCore.classifySeverity(z.capacity, z.waitMinutes);
-        const capClass = sev === 'critical' ? 'cap-high' : sev === 'elevated' ? 'cap-mid' : 'cap-ok';
-        return `<tr>
-          <td>${escapeHtml(n)}</td>
-          <td class="${capClass}">${z.capacity !== undefined ? z.capacity + '%' : '—'}</td>
-          <td>${z.waitMinutes !== undefined ? z.waitMinutes + ' min' : '—'}</td>
-          <td>${z.headcount !== undefined ? z.headcount : '—'}</td>
-        </tr>`;
-      }).join('');
-    }
-
-    function escapeHtml(s) {
-      const d = document.createElement('div');
-      d.textContent = String(s);
-      return d.innerHTML;
+      renderStadiumMap();
     }
 
     function handleFile(file) {
@@ -255,6 +371,8 @@ Transit Hub,81,18,340`;
       setUploadStatus(`Loaded ${Object.keys(zones).length} sample zone(s).`, false);
     });
 
+    renderStadiumMap(); // initial placeholder render
+
     // ---- Quick chips ----
     els.quickChips.addEventListener('click', (e) => {
       const btn = e.target.closest('.chip');
@@ -263,26 +381,54 @@ Transit Hub,81,18,340`;
       els.reportInput.focus();
     });
 
-    // ---- Reasoning response rendering ----
-    function renderReasoningBlock(rawText) {
-      // Turn OBSERVATION:/DATA:/... labeled sections into styled blocks.
+    // ---- Chat conversation rendering ----
+    function markupReasoning(rawText) {
       const labels = ['OBSERVATION', 'DATA', 'REASONING', 'RECOMMENDATION', 'VOLUNTEER SCRIPT'];
       let html = escapeHtml(rawText);
       labels.forEach(label => {
         const re = new RegExp('(^|\\n)' + label + ':', 'g');
         html = html.replace(re, `$1<strong class="section">${label}</strong>`);
       });
-      els.responseArea.innerHTML = html;
+      return html;
     }
 
-    function addShiftLogUI(text, severity) {
-      const entry = AppCore.addLogEntry({ text, severity });
+    function clearConversationPlaceholder() {
+      const ph = els.conversation.querySelector('.placeholder');
+      if (ph) ph.remove();
+    }
+
+    function addVolunteerBubble(text, zoneName, repeatCount) {
+      clearConversationPlaceholder();
+      const div = document.createElement('div');
+      div.className = 'bubble volunteer';
+      const metaBits = [];
+      if (zoneName) metaBits.push(zoneName);
+      if (repeatCount > 0) metaBits.push(`repeat #${repeatCount + 1} on this zone`);
+      div.innerHTML = `${metaBits.length ? `<div class="meta">${escapeHtml(metaBits.join(' • '))}</div>` : ''}${escapeHtml(text)}`;
+      els.conversation.appendChild(div);
+      els.conversation.scrollTop = els.conversation.scrollHeight;
+      return div;
+    }
+
+    function addAiBubble() {
+      clearConversationPlaceholder();
+      const div = document.createElement('div');
+      div.className = 'bubble ai';
+      div.innerHTML = '<span class="meta">VolunteerIQ</span><p class="placeholder" style="margin:0">Thinking through observation → data → reasoning…</p>';
+      els.conversation.appendChild(div);
+      els.conversation.scrollTop = els.conversation.scrollHeight;
+      return div;
+    }
+
+    function addShiftLogUI(text, severity, zoneName) {
+      const entry = AppCore.addLogEntry({ text, severity, zone: zoneName || undefined });
       const li = document.createElement('li');
       li.className = 'sev-' + severity;
       const time = entry.ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       li.innerHTML = `<span class="t">${time}</span><span>${escapeHtml(text)}</span>`;
       els.shiftLog.prepend(li);
       els.logCount.textContent = AppCore.logEntries.length;
+      els.summaryBtn.disabled = AppCore.logEntries.length === 0;
     }
 
     // ---- Report form submit ----
@@ -303,29 +449,41 @@ Transit Hub,81,18,340`;
 
       const zoneName = els.zoneForReport.value;
       const zoneData = zoneName && AppCore.zones[zoneName] ? AppCore.zones[zoneName] : {};
+      const repeatCount = AppCore.getRecentReportsForZone(zoneName, 15);
+      const history = AppCore.getRecentHistory(3);
       const context = {
         zone: zoneName || undefined,
         capacity: zoneData.capacity,
         waitMinutes: zoneData.waitMinutes,
         headcount: zoneData.headcount,
         language: els.languageSelect.value || undefined,
-        dataSource: zoneName ? 'uploaded/sample CSV' : undefined
+        dataSource: zoneName ? 'uploaded/sample CSV' : undefined,
+        repeatCount,
+        history
       };
+
+      addVolunteerBubble(text, zoneName, repeatCount);
+      const aiBubble = addAiBubble();
 
       els.submitReport.disabled = true;
       els.submitReport.innerHTML = '<i data-lucide="loader-2" class="spin"></i> Reasoning...';
       if (window.lucide) lucide.createIcons();
-      els.responseArea.innerHTML = '<p class="placeholder">Thinking through observation → data → reasoning...</p>';
 
       let fullText = '';
+      let sevForBubble = AppCore.classifySeverity(context.capacity, context.waitMinutes);
+      if (repeatCount > 0 && sevForBubble === 'normal') sevForBubble = 'elevated';
+      if (repeatCount >= 2) sevForBubble = 'critical';
+      aiBubble.className = 'bubble ai sev-' + sevForBubble;
+
       try {
         const { mode } = await GeminiService.ask(text, context, (chunk) => {
           fullText += chunk;
-          renderReasoningBlock(fullText);
+          aiBubble.innerHTML = '<span class="meta">VolunteerIQ</span>' + markupReasoning(fullText);
+          els.conversation.scrollTop = els.conversation.scrollHeight;
         });
         if (mode === 'live') updateModeBadge();
       } catch (err) {
-        els.responseArea.innerHTML = `<p class="placeholder">Something went wrong generating a response: ${escapeHtml(err.message || String(err))}. Please try again.</p>`;
+        aiBubble.innerHTML = `<span class="meta">VolunteerIQ</span><p style="margin:0">Something went wrong generating a response: ${escapeHtml(err.message || String(err))}. Please try again.</p>`;
         console.error(err);
       } finally {
         els.submitReport.disabled = false;
@@ -333,8 +491,33 @@ Transit Hub,81,18,340`;
         if (window.lucide) lucide.createIcons();
       }
 
-      const severity = AppCore.classifySeverity(context.capacity, context.waitMinutes);
-      addShiftLogUI(text + (zoneName ? ` (${zoneName})` : ''), severity);
+      addShiftLogUI(text + (zoneName ? ` (${zoneName})` : ''), sevForBubble, zoneName);
+      els.reportInput.value = '';
+    });
+
+    // ---- End-of-shift summary ----
+    els.summaryBtn.addEventListener('click', async () => {
+      els.summaryPanel.hidden = false;
+      els.summaryBtn.disabled = true;
+      els.summaryBtn.innerHTML = '<i data-lucide="loader-2" class="spin"></i> Summarizing...';
+      if (window.lucide) lucide.createIcons();
+      els.summaryContent.innerHTML = '<p class="placeholder">Reviewing the full shift log…</p>';
+
+      let fullText = '';
+      try {
+        await GeminiService.summarizeShift(AppCore.logEntries, (chunk) => {
+          fullText += chunk;
+          els.summaryContent.innerHTML = markupReasoning(fullText);
+        });
+      } catch (err) {
+        els.summaryContent.innerHTML = `<p class="placeholder">Could not generate a summary: ${escapeHtml(err.message || String(err))}</p>`;
+        console.error(err);
+      } finally {
+        els.summaryBtn.disabled = AppCore.logEntries.length === 0;
+        els.summaryBtn.innerHTML = '<i data-lucide="file-text"></i> Regenerate Summary';
+        if (window.lucide) lucide.createIcons();
+        els.summaryPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
     });
   });
 }

@@ -166,6 +166,88 @@ function runAllTests(AppCore) {
     assert(/No live data provided/.test(text));
   });
 
+  // ---------- EDGE CASES: repeat-report / shift-memory detection ----------
+  test('getRecentReportsForZone: returns 0 with no prior entries', () => {
+    AppCore.logEntries = [];
+    assertEqual(AppCore.getRecentReportsForZone('Gate A'), 0);
+  });
+
+  test('getRecentReportsForZone: counts only matching zone, not other zones', () => {
+    AppCore.logEntries = [];
+    const now = new Date();
+    AppCore.logEntries.push({ text: 'a', severity: 'normal', zone: 'Gate A', ts: now });
+    AppCore.logEntries.push({ text: 'b', severity: 'normal', zone: 'Gate B', ts: now });
+    assertEqual(AppCore.getRecentReportsForZone('Gate A', 15, now), 1);
+  });
+
+  test('getRecentReportsForZone: excludes entries outside the time window', () => {
+    AppCore.logEntries = [];
+    const now = new Date();
+    const old = new Date(now.getTime() - 20 * 60000); // 20 min ago
+    AppCore.logEntries.push({ text: 'old', severity: 'normal', zone: 'Gate A', ts: old });
+    assertEqual(AppCore.getRecentReportsForZone('Gate A', 15, now), 0);
+  });
+
+  test('getRecentReportsForZone: handles missing/undefined zone name without throwing', () => {
+    AppCore.logEntries = [];
+    assertEqual(AppCore.getRecentReportsForZone(undefined), 0);
+    assertEqual(AppCore.getRecentReportsForZone(''), 0);
+  });
+
+  test('getRecentHistory: returns empty array when log is empty (no crash)', () => {
+    AppCore.logEntries = [];
+    const h = AppCore.getRecentHistory(3);
+    assert(Array.isArray(h));
+    assertEqual(h.length, 0);
+  });
+
+  test('getRecentHistory: respects the count limit', () => {
+    AppCore.logEntries = [];
+    for (let i = 0; i < 10; i++) AppCore.addLogEntry({ text: 'e' + i, severity: 'normal', zone: 'Gate A' });
+    assertEqual(AppCore.getRecentHistory(3).length, 3);
+  });
+
+  // ---------- EDGE CASES: offline reasoning composer with repeats ----------
+  test('GeminiService offline composer: repeat report escalates recommendation language', () => {
+    if (typeof GeminiService === 'undefined') return;
+    const first = GeminiService._composeReasoning('queue at gate a', { zone: 'Gate A', repeatCount: 0 });
+    const repeat = GeminiService._composeReasoning('queue at gate a', { zone: 'Gate A', repeatCount: 1 });
+    assert(/escalat/i.test(repeat), 'expected escalation language on repeat report');
+    assert(!/escalat/i.test(first) || first !== repeat, 'first report should differ from a repeat report');
+  });
+
+  test('GeminiService offline composer: repeatCount of 2+ forces critical-style response', () => {
+    if (typeof GeminiService === 'undefined') return;
+    const text = GeminiService._composeReasoning('queue building', { zone: 'Gate A', repeatCount: 2 });
+    assert(/flagged 3 times|backup/i.test(text));
+  });
+
+  // ---------- EDGE CASES: shift summary composer ----------
+  test('_composeSummary: empty log produces an honest "no data" summary, not invented incidents', () => {
+    if (typeof GeminiService === 'undefined') return;
+    const text = GeminiService._composeSummary([]);
+    assert(/no reports/i.test(text));
+    assert(/SHIFT OVERVIEW/.test(text) && /HANDOFF RECOMMENDATION/.test(text));
+  });
+
+  test('_composeSummary: detects a repeated zone as a pattern', () => {
+    if (typeof GeminiService === 'undefined') return;
+    const now = new Date();
+    const log = [
+      { text: 'queue (Gate A)', severity: 'elevated', zone: 'Gate A', ts: now },
+      { text: 'queue again (Gate A)', severity: 'critical', zone: 'Gate A', ts: now }
+    ];
+    const text = GeminiService._composeSummary(log);
+    assert(/Gate A was reported 2 times/i.test(text));
+  });
+
+  test('_composeSummary: single normal entry does not falsely report a pattern', () => {
+    if (typeof GeminiService === 'undefined') return;
+    const log = [{ text: 'all clear (Gate A)', severity: 'normal', zone: 'Gate A', ts: new Date() }];
+    const text = GeminiService._composeSummary(log);
+    assert(/No repeat patterns detected/.test(text));
+  });
+
   const passed = results.filter(r => r.pass).length;
   return { results, passed, total: results.length };
 }
@@ -173,6 +255,7 @@ function runAllTests(AppCore) {
 // Allow running headless via `node tests.js`
 if (typeof module !== 'undefined' && require.main === module) {
   const { AppCore } = require('./app.js');
+  global.GeminiService = require('./gemini-api.js').GeminiService;
   const { results, passed, total } = runAllTests(AppCore);
   results.forEach(r => console.log((r.pass ? 'PASS' : 'FAIL') + ' - ' + r.name + (r.error ? ' :: ' + r.error : '')));
   console.log(`\n${passed}/${total} passed`);

@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>VolunteerIQ 2026 — World Cup Volunteer Command Assistant</title>
 <meta name="description" content="A reasoning-driven GenAI assistant built for one persona: World Cup 2026 volunteers, handling crowd management and multilingual fan support." />
+<link rel="icon" type="image/png" href="brt.png">
 <link rel="stylesheet" href="styles.css" />
 <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js" defer></script>
 </head>
@@ -14,7 +15,7 @@
 
 <header class="topbar">
   <div class="brand">
-    <i data-lucide="radio-tower"></i>
+    <img src="brt.png" alt="VolunteerIQ Logo" class="logo">
     <div>
       <h1>VolunteerIQ <span>2026</span></h1>
       <p>Built for one persona: World Cup volunteers</p>
@@ -40,6 +41,20 @@
       <strong>Focus:</strong> Crowd management + multilingual fan support &nbsp;•&nbsp;
       Every AI answer shows its reasoning — not just an answer.
     </p>
+  </section>
+
+  <section class="panel map-panel" aria-labelledby="mapHeading">
+    <h2 id="mapHeading"><i data-lucide="map"></i> Live Crowd Map</h2>
+    <p class="panel-sub">Color reflects live severity from your loaded data. Click a zone to report on it directly.</p>
+    <div id="stadiumMapWrap" class="stadium-map-wrap">
+      <svg id="stadiumMap" viewBox="0 0 600 340" role="img" aria-label="Stadium zone map"></svg>
+    </div>
+    <div class="map-legend">
+      <span><i class="dot dot-normal"></i> Normal</span>
+      <span><i class="dot dot-elevated"></i> Elevated</span>
+      <span><i class="dot dot-critical"></i> Critical</span>
+      <span class="map-hint">No data loaded — showing placeholder layout.</span>
+    </div>
   </section>
 
   <div class="grid">
@@ -107,12 +122,22 @@
       </form>
       <p id="formError" class="error-line" role="alert" aria-live="assertive"></p>
 
-      <div id="responseArea" class="response-area" aria-live="polite">
-        <p class="placeholder">Your reasoned recommendation will appear here.</p>
+      <div id="conversation" class="conversation" aria-live="polite" aria-label="Conversation with reasoning assistant">
+        <p class="placeholder">Your reasoned recommendations will appear here as a running conversation. The AI remembers your last few reports this shift and will call out repeats.</p>
       </div>
 
-      <h3 class="mt"><i data-lucide="clipboard-list"></i> Shift Log <span id="logCount" class="pill">0</span></h3>
+      <div class="shift-tools">
+        <h3><i data-lucide="clipboard-list"></i> Shift Log <span id="logCount" class="pill">0</span></h3>
+        <button type="button" id="summaryBtn" class="btn ghost small" disabled>
+          <i data-lucide="file-text"></i> Generate End-of-Shift Summary
+        </button>
+      </div>
       <ul id="shiftLog" class="shift-log"></ul>
+
+      <div id="summaryPanel" class="summary-panel" hidden>
+        <h3><i data-lucide="sparkles"></i> Shift Handoff Brief</h3>
+        <div id="summaryContent" class="response-area"></div>
+      </div>
     </section>
 
   </div>
