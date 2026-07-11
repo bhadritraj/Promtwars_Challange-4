@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>VolunteerIQ 2026 — World Cup Volunteer Command Assistant</title>
+<meta name="description" content="A reasoning-driven GenAI assistant built for one persona: World Cup 2026 volunteers, handling crowd management and multilingual fan support." />
+<link rel="stylesheet" href="styles.css" />
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js" defer></script>
+</head>
+<body>
+
+<a class="skip-link" href="#main">Skip to main content</a>
+
+<header class="topbar">
+  <div class="brand">
+    <i data-lucide="radio-tower"></i>
+    <div>
+      <h1>VolunteerIQ <span>2026</span></h1>
+      <p>Built for one persona: World Cup volunteers</p>
+    </div>
+  </div>
+  <div class="topbar-actions">
+    <span id="modeBadge" class="mode-badge offline">Offline reasoning engine</span>
+    <button id="themeToggle" class="icon-btn" aria-label="Toggle high-contrast theme">
+      <i data-lucide="contrast"></i>
+    </button>
+    <button id="settingsBtn" class="icon-btn" aria-label="Open settings">
+      <i data-lucide="settings"></i>
+    </button>
+  </div>
+</header>
+
+<main id="main">
+
+  <section class="persona-banner" aria-label="Persona and scope">
+    <i data-lucide="user-check"></i>
+    <p>
+      <strong>Persona:</strong> Volunteer coordinator on shift &nbsp;•&nbsp;
+      <strong>Focus:</strong> Crowd management + multilingual fan support &nbsp;•&nbsp;
+      Every AI answer shows its reasoning — not just an answer.
+    </p>
+  </section>
+
+  <div class="grid">
+
+    <!-- LEFT: Live zone data + upload -->
+    <section class="panel" aria-labelledby="dataHeading">
+      <h2 id="dataHeading"><i data-lucide="database"></i> Live Zone Data</h2>
+      <p class="panel-sub">Drop in real data. This drives the AI's reasoning below — it is not decorative.</p>
+
+      <div class="upload-box" id="dropZone" tabindex="0" role="button" aria-label="Upload zone data CSV">
+        <i data-lucide="upload-cloud"></i>
+        <p><strong>Upload CSV</strong> (zone,capacity,waitMinutes,headcount)</p>
+        <input type="file" id="csvInput" accept=".csv" hidden />
+        <button type="button" id="browseBtn" class="btn small">Choose file</button>
+        <button type="button" id="sampleBtn" class="btn small ghost">Load sample data</button>
+      </div>
+      <p id="uploadStatus" class="status-line" role="status" aria-live="polite"></p>
+
+      <table class="zone-table" id="zoneTable" aria-label="Zone capacity table">
+        <thead>
+          <tr><th>Zone</th><th>Capacity</th><th>Wait</th><th>Headcount</th></tr>
+        </thead>
+        <tbody id="zoneTableBody">
+          <tr><td colspan="4" class="empty-row">No data loaded yet — load sample data or upload a CSV.</td></tr>
+        </tbody>
+      </table>
+
+      <h3 class="mt"><i data-lucide="languages"></i> Fan Language Right Now</h3>
+      <select id="languageSelect" aria-label="Select fan language">
+        <option value="">Not specified</option>
+        <option>English</option>
+        <option>Spanish</option>
+        <option>Portuguese</option>
+        <option>French</option>
+        <option>Arabic</option>
+        <option>Japanese</option>
+        <option>German</option>
+      </select>
+    </section>
+
+    <!-- RIGHT: Reasoning assistant -->
+    <section class="panel wide" aria-labelledby="assistantHeading">
+      <h2 id="assistantHeading"><i data-lucide="brain-circuit"></i> Reasoning Assistant</h2>
+      <p class="panel-sub">Report what you're seeing. The AI will show its Observation → Data → Reasoning → Recommendation before telling you what to do.</p>
+
+      <div class="quick-chips" id="quickChips">
+        <button class="chip" data-text="Long line building up at Gate C">Queue at Gate C</button>
+        <button class="chip" data-text="Fan looks lost near the west concourse">Lost fan</button>
+        <button class="chip" data-text="Fan collapsed near section 114, needs help">Medical</button>
+        <button class="chip" data-text="Fan only speaks Portuguese and needs directions">Language barrier</button>
+      </div>
+
+      <form id="reportForm" class="report-form">
+        <label for="reportInput" class="sr-only">Describe what you're observing</label>
+        <textarea id="reportInput" placeholder="e.g. Gate B queue is backing up past the barrier line..." rows="3" maxlength="400"></textarea>
+        <div class="form-row">
+          <label for="zoneForReport" class="inline-label">Zone:</label>
+          <select id="zoneForReport" aria-label="Zone for this report">
+            <option value="">Select zone (optional)</option>
+          </select>
+          <button type="submit" class="btn primary" id="submitReport">
+            <i data-lucide="send"></i> Get Reasoning
+          </button>
+        </div>
+      </form>
+      <p id="formError" class="error-line" role="alert" aria-live="assertive"></p>
+
+      <div id="responseArea" class="response-area" aria-live="polite">
+        <p class="placeholder">Your reasoned recommendation will appear here.</p>
+      </div>
+
+      <h3 class="mt"><i data-lucide="clipboard-list"></i> Shift Log <span id="logCount" class="pill">0</span></h3>
+      <ul id="shiftLog" class="shift-log"></ul>
+    </section>
+
+  </div>
+</main>
+
+<dialog id="settingsDialog" class="settings-dialog">
+  <form method="dialog">
+    <h2><i data-lucide="key-round"></i> Gemini API Key (optional)</h2>
+    <p>Leave blank to use the built-in offline reasoning engine — the app is fully functional without a key.</p>
+    <input type="password" id="apiKeyInput" placeholder="AIza..." autocomplete="off" />
+    <div class="dialog-actions">
+      <button type="button" id="clearKeyBtn" class="btn ghost small">Clear key</button>
+      <button type="submit" id="saveKeyBtn" class="btn primary small">Save & Close</button>
+    </div>
+  </form>
+</dialog>
+
+<footer class="site-footer">
+  <p>VolunteerIQ 2026 — single-persona GenAI demo for World Cup volunteers. <a href="tests.html">Run test suite</a></p>
+</footer>
+
+<script src="gemini-api.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

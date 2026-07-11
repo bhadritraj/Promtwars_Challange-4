@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>VolunteerIQ — Test Suite</title>
+<style>
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background:#0b1220; color:#e7ecf7; padding:24px; max-width: 820px; margin:0 auto; }
+  h1 { font-size: 1.2rem; }
+  #summary { padding:12px 16px; border-radius:10px; margin:14px 0; font-weight:600; }
+  .pass-all { background:#123b2f; color:#37c6a8; }
+  .fail-some { background:#3b1212; color:#ff6b6b; }
+  ul { list-style:none; padding:0; }
+  li { padding:8px 10px; border-bottom:1px solid #263252; font-size:0.9rem; display:flex; gap:10px; }
+  .ok { color:#37c6a8; }
+  .bad { color:#ff6b6b; }
+  code { background:#182238; padding:1px 5px; border-radius:4px; }
+</style>
+</head>
+<body>
+  <h1>VolunteerIQ — Automated Test Suite</h1>
+  <p>Covers happy-path <em>and</em> edge cases: empty input, malformed CSV, missing columns, non-numeric data, and severity boundary conditions.</p>
+  <div id="summary">Running...</div>
+  <ul id="results"></ul>
+
+  <script src="app.js"></script>
+  <script src="tests.js"></script>
+  <script>
+    const { results, passed, total } = runAllTests(AppCore);
+    const summary = document.getElementById('summary');
+    summary.textContent = `${passed} / ${total} tests passed`;
+    summary.className = passed === total ? 'pass-all' : 'fail-some';
+
+    const ul = document.getElementById('results');
+    results.forEach(r => {
+      const li = document.createElement('li');
+      li.innerHTML = `<span class="${r.pass ? 'ok' : 'bad'}">${r.pass ? '✔' : '✘'}</span> <span>${r.name}${r.pass ? '' : ' — <code>' + (r.error || 'assertion failed') + '</code>'}</span>`;
+      ul.appendChild(li);
+    });
+  </script>
+</body>
+</html>

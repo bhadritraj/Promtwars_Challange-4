@@ -1,0 +1,6 @@
+zone,capacity,waitMinutes,headcount
+Gate A,62,6,410
+Gate B,78,14,530
+Gate C,93,27,690
+West Concourse,45,3,220
+Transit Hub,81,18,340
