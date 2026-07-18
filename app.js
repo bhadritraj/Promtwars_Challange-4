@@ -6,6 +6,11 @@
  * directly (no DOM scraping needed for logic tests).
  */
 
+const APP_CFG = (typeof module !== 'undefined' && module.exports)
+  ? require('./constants.js')
+  : { SEVERITY_THRESHOLDS, REPEAT_WINDOW_MINUTES, MAX_LOG_ENTRIES, HISTORY_COUNT_FOR_AI };
+
+
 const AppCore = {
   zones: {}, // { zoneName: {capacity, waitMinutes, headcount} }
   logEntries: [],
@@ -84,7 +89,7 @@ const AppCore = {
 
   addLogEntry(entry) {
     this.logEntries.unshift({ ...entry, ts: new Date() });
-    if (this.logEntries.length > 100) this.logEntries.pop();
+    if (this.logEntries.length > APP_CFG.MAX_LOG_ENTRIES) this.logEntries.pop();
     return this.logEntries[0];
   },
 
@@ -93,14 +98,14 @@ const AppCore = {
    * excluding the current one being composed. This is what makes the AI
    * "remember" the shift instead of treating every message as isolated.
    */
-  getRecentReportsForZone(zoneName, withinMinutes = 15, now = new Date()) {
+  getRecentReportsForZone(zoneName, withinMinutes = APP_CFG.REPEAT_WINDOW_MINUTES, now = new Date()) {
     if (!zoneName) return 0;
     const cutoff = now.getTime() - withinMinutes * 60000;
     return this.logEntries.filter(e => e.zone === zoneName && e.ts.getTime() >= cutoff).length;
   },
 
   /** Last N log entries formatted for passing to the AI as conversation history. */
-  getRecentHistory(count = 3) {
+  getRecentHistory(count = APP_CFG.HISTORY_COUNT_FOR_AI) {
     return this.logEntries.slice(0, count).map(e => ({ text: e.text, zone: e.zone, severity: e.severity }));
   },
 
@@ -108,23 +113,43 @@ const AppCore = {
   classifySeverity(capacity, waitMinutes) {
     let severity = 'normal';
     if (capacity !== undefined) {
-      if (capacity >= 90) severity = 'critical';
-      else if (capacity >= 75) severity = 'elevated';
+      if (capacity >= APP_CFG.SEVERITY_THRESHOLDS.CRITICAL_CAPACITY_PCT) severity = 'critical';
+      else if (capacity >= APP_CFG.SEVERITY_THRESHOLDS.ELEVATED_CAPACITY_PCT) severity = 'elevated';
     }
     if (waitMinutes !== undefined) {
-      if (waitMinutes >= 25) severity = 'critical';
-      else if (waitMinutes >= 15 && severity !== 'critical') severity = 'elevated';
+      if (waitMinutes >= APP_CFG.SEVERITY_THRESHOLDS.CRITICAL_WAIT_MIN) severity = 'critical';
+      else if (waitMinutes >= APP_CFG.SEVERITY_THRESHOLDS.ELEVATED_WAIT_MIN && severity !== 'critical') severity = 'elevated';
     }
     return severity;
   }
 };
 
 // ---------------------------------------------------------------------
+// Shared pure helpers (module scope: reusable outside the DOM-wiring
+// closure, and safe to call even where `document` exists but no icons
+// are loaded yet).
+// ---------------------------------------------------------------------
+function escapeHtml(s) {
+  if (typeof document === 'undefined') {
+    // Minimal fallback for non-browser contexts (kept in sync with the
+    // DOM-based version's behavior for the characters that matter).
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  const d = document.createElement('div');
+  d.textContent = String(s);
+  return d.innerHTML;
+}
+
+function refreshIcons() {
+  if (typeof window !== 'undefined' && window.lucide) window.lucide.createIcons();
+}
+
+// ---------------------------------------------------------------------
 // DOM wiring (skipped entirely in non-browser test contexts)
 // ---------------------------------------------------------------------
 if (typeof document !== 'undefined') {
   document.addEventListener('DOMContentLoaded', () => {
-    if (window.lucide) lucide.createIcons();
+    refreshIcons();
 
     const els = {
       themeToggle: document.getElementById('themeToggle'),
@@ -189,12 +214,6 @@ if (typeof document !== 'undefined') {
       els.modeBadge.className = 'mode-badge ' + (live ? 'live' : 'offline');
     }
     updateModeBadge();
-
-    function escapeHtml(s) {
-      const d = document.createElement('div');
-      d.textContent = String(s);
-      return d.innerHTML;
-    }
 
     // ---- Live Stadium Map (SVG) ----
     const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -449,7 +468,7 @@ Transit Hub,81,18,340`;
 
       const zoneName = els.zoneForReport.value;
       const zoneData = zoneName && AppCore.zones[zoneName] ? AppCore.zones[zoneName] : {};
-      const repeatCount = AppCore.getRecentReportsForZone(zoneName, 15);
+      const repeatCount = AppCore.getRecentReportsForZone(zoneName);
       const history = AppCore.getRecentHistory(3);
       const context = {
         zone: zoneName || undefined,
@@ -467,7 +486,7 @@ Transit Hub,81,18,340`;
 
       els.submitReport.disabled = true;
       els.submitReport.innerHTML = '<i data-lucide="loader-2" class="spin"></i> Reasoning...';
-      if (window.lucide) lucide.createIcons();
+      refreshIcons();
 
       let fullText = '';
       let sevForBubble = AppCore.classifySeverity(context.capacity, context.waitMinutes);
@@ -488,7 +507,7 @@ Transit Hub,81,18,340`;
       } finally {
         els.submitReport.disabled = false;
         els.submitReport.innerHTML = '<i data-lucide="send"></i> Get Reasoning';
-        if (window.lucide) lucide.createIcons();
+        refreshIcons();
       }
 
       addShiftLogUI(text + (zoneName ? ` (${zoneName})` : ''), sevForBubble, zoneName);
@@ -500,7 +519,7 @@ Transit Hub,81,18,340`;
       els.summaryPanel.hidden = false;
       els.summaryBtn.disabled = true;
       els.summaryBtn.innerHTML = '<i data-lucide="loader-2" class="spin"></i> Summarizing...';
-      if (window.lucide) lucide.createIcons();
+      refreshIcons();
       els.summaryContent.innerHTML = '<p class="placeholder">Reviewing the full shift log…</p>';
 
       let fullText = '';
@@ -515,7 +534,7 @@ Transit Hub,81,18,340`;
       } finally {
         els.summaryBtn.disabled = AppCore.logEntries.length === 0;
         els.summaryBtn.innerHTML = '<i data-lucide="file-text"></i> Regenerate Summary';
-        if (window.lucide) lucide.createIcons();
+        refreshIcons();
         els.summaryPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       }
     });

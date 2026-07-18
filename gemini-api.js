@@ -7,6 +7,22 @@
  * without changing behavior or UI.
  */
 
+// In Node (headless tests), pull shared constants in via require, namespaced
+// under GEMINI_CFG so this never redeclares the same top-level identifiers
+// constants.js already defines. In the browser, constants.js is loaded first
+// as a plain <script>, so we just read its bare top-level consts directly
+// into the same namespace object (a read, not a redeclaration — safe).
+const GEMINI_CFG = (typeof module !== 'undefined' && module.exports)
+  ? require('./constants.js')
+  : {
+      SEVERITY_THRESHOLDS, REPEAT_WINDOW_MINUTES, REPEAT_ESCALATION_COUNT,
+      GEMINI_TIMEOUT_MS, GEMINI_STREAM_DELAY_MS,
+      GEMINI_MAX_TOKENS_REASONING, GEMINI_MAX_TOKENS_SUMMARY,
+      GEMINI_TEMPERATURE_REASONING, GEMINI_TEMPERATURE_SUMMARY
+    };
+
+
+
 const REASONING_CONTRACT = `You are VolunteerIQ, a reasoning assistant for World Cup 2026 volunteers.
 You NEVER answer with just a fact. Every response MUST follow this exact structure,
 using these exact section headers, in this order:
@@ -53,7 +69,10 @@ const GeminiService = {
 
     if (apiKey) {
       try {
-        await this._callRealGemini(apiKey, prompt, context, onChunk);
+        const contextBlock = this._formatContext(context);
+        const fullPrompt = `${contextBlock}\n\nVolunteer report: "${prompt}"`;
+        const text = await this._callGeminiRaw(apiKey, REASONING_CONTRACT, fullPrompt, GEMINI_CFG.GEMINI_MAX_TOKENS_REASONING, GEMINI_CFG.GEMINI_TEMPERATURE_REASONING);
+        await this._streamText(text, onChunk);
         return { mode: 'live' };
       } catch (error) {
         console.error('Gemini API error, falling back to offline reasoning engine:', error);
@@ -65,20 +84,22 @@ const GeminiService = {
     return { mode: apiKey ? 'fallback' : 'offline' };
   },
 
-  async _callRealGemini(apiKey, prompt, context, onChunk) {
+  /**
+   * Single low-level Gemini REST call shared by ask() and summarizeShift().
+   * Handles the request, the abort-on-timeout guard, and response/error
+   * parsing in exactly one place instead of two near-identical copies.
+   */
+  async _callGeminiRaw(apiKey, systemInstruction, userText, maxOutputTokens, temperature) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`;
 
-    const contextBlock = this._formatContext(context);
-    const fullPrompt = `${contextBlock}\n\nVolunteer report: "${prompt}"`;
-
     const requestBody = {
-      contents: [{ role: 'user', parts: [{ text: fullPrompt }] }],
-      systemInstruction: { parts: [{ text: REASONING_CONTRACT }] },
-      generationConfig: { temperature: 0.6, maxOutputTokens: 500 }
+      contents: [{ role: 'user', parts: [{ text: userText }] }],
+      systemInstruction: { parts: [{ text: systemInstruction }] },
+      generationConfig: { temperature, maxOutputTokens }
     };
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
+    const timeout = setTimeout(() => controller.abort(), GEMINI_CFG.GEMINI_TIMEOUT_MS);
 
     let response;
     try {
@@ -97,18 +118,14 @@ const GeminiService = {
       try {
         const errorData = await response.json();
         msg = errorData.error?.message || msg;
-      } catch (_) { /* ignore parse failure */ }
+      } catch (_) { /* ignore parse failure, keep generic HTTP message */ }
       throw new Error(msg);
     }
 
     const data = await response.json();
     const textResult = data.candidates?.[0]?.content?.parts?.[0]?.text;
-
-    if (!textResult) {
-      throw new Error('Empty response from Gemini API');
-    }
-
-    await this._streamText(textResult, onChunk);
+    if (!textResult) throw new Error('Empty response from Gemini API');
+    return textResult;
   },
 
   _formatContext(context) {
@@ -119,7 +136,7 @@ const GeminiService = {
     if (context.headcount !== undefined) lines.push(`Estimated headcount: ${context.headcount}`);
     if (context.language) lines.push(`Fan's language: ${context.language}`);
     if (context.dataSource) lines.push(`Data source: ${context.dataSource}`);
-    lines.push(`Repeat count on this zone (last 15 min, excluding this report): ${context.repeatCount || 0}`);
+    lines.push(`Repeat count on this zone (last ${GEMINI_CFG.REPEAT_WINDOW_MINUTES} min, excluding this report): ${context.repeatCount || 0}`);
     if (context.history && context.history.length) {
       lines.push('Recent shift history (most recent last):');
       context.history.forEach(h => lines.push(`  - "${h.text}"${h.zone ? ' (' + h.zone + ')' : ''} — ${h.severity}`));
@@ -132,7 +149,7 @@ const GeminiService = {
     const words = text.split(/(\s+)/);
     for (const word of words) {
       onChunk(word);
-      await new Promise(r => setTimeout(r, 12));
+      await new Promise(r => setTimeout(r, GEMINI_CFG.GEMINI_STREAM_DELAY_MS));
     }
   },
 
@@ -169,14 +186,14 @@ VOLUNTEER SCRIPT: "One moment, let me confirm the situation before I direct you.
     // Determine severity from actual numbers when present
     let severity = 'normal';
     if (capacity !== undefined) {
-      if (capacity >= 90) severity = 'critical';
-      else if (capacity >= 75) severity = 'elevated';
+      if (capacity >= GEMINI_CFG.SEVERITY_THRESHOLDS.CRITICAL_CAPACITY_PCT) severity = 'critical';
+      else if (capacity >= GEMINI_CFG.SEVERITY_THRESHOLDS.ELEVATED_CAPACITY_PCT) severity = 'elevated';
     }
-    if (wait !== undefined && wait >= 15) severity = severity === 'critical' ? 'critical' : 'elevated';
-    if (wait !== undefined && wait >= 25) severity = 'critical';
+    if (wait !== undefined && wait >= GEMINI_CFG.SEVERITY_THRESHOLDS.ELEVATED_WAIT_MIN) severity = severity === 'critical' ? 'critical' : 'elevated';
+    if (wait !== undefined && wait >= GEMINI_CFG.SEVERITY_THRESHOLDS.CRITICAL_WAIT_MIN) severity = 'critical';
     // A second report on the same zone within the window is itself an escalation signal
     if (isRepeat && severity === 'normal') severity = 'elevated';
-    if (repeatCount >= 2) severity = 'critical';
+    if (repeatCount >= GEMINI_CFG.REPEAT_ESCALATION_COUNT) severity = 'critical';
 
     const isCrowd = /(crowd|queue|line|congest|full|packed|bottleneck|gate)/.test(p);
     const isLost = /(lost|where|find|direction|help me get|how do i get)/.test(p);
@@ -185,8 +202,8 @@ VOLUNTEER SCRIPT: "One moment, let me confirm the situation before I direct you.
 
     const dataLine = (hasData
       ? `Zone: ${zone}. Capacity: ${capacity !== undefined ? capacity + '%' : 'n/a'}. Wait: ${wait !== undefined ? wait + ' min' : 'n/a'}.${headcount !== undefined ? ' Headcount est.: ' + headcount + '.' : ''}`
-      : 'No live data provided for this zone — reasoning from standard crowd-safety thresholds (75%+ capacity or 15+ min wait triggers escalation).')
-      + (isRepeat ? ` This is report #${repeatCount + 1} on this zone in the last 15 minutes.` : '');
+      : `No live data provided for this zone — reasoning from standard crowd-safety thresholds (${GEMINI_CFG.SEVERITY_THRESHOLDS.ELEVATED_CAPACITY_PCT}%+ capacity or ${GEMINI_CFG.SEVERITY_THRESHOLDS.ELEVATED_WAIT_MIN}+ min wait triggers escalation).`)
+      + (isRepeat ? ` This is report #${repeatCount + 1} on this zone in the last ${GEMINI_CFG.REPEAT_WINDOW_MINUTES} minutes.` : '');
 
     if (isMedical) {
       return `OBSERVATION: You reported a possible medical situation in ${zone}.
@@ -202,9 +219,9 @@ VOLUNTEER SCRIPT: "Medical support is on the way, please give us a little space.
         : isRepeat
         ? `Your earlier redirect for ${zone} hasn't held — step it up: escalate to your supervisor by radio and open a second lane rather than repeating the same soft redirect.`
         : severity === 'critical'
-        ? `Close entry to ${zone} temporarily and open the nearest alternate gate; this is the standard response above the 90% / 25-min threshold.`
+        ? `Close entry to ${zone} temporarily and open the nearest alternate gate; this is the standard response above the ${GEMINI_CFG.SEVERITY_THRESHOLDS.CRITICAL_CAPACITY_PCT}% / ${GEMINI_CFG.SEVERITY_THRESHOLDS.CRITICAL_WAIT_MIN}-min threshold.`
         : severity === 'elevated'
-        ? `Open a second screening lane in ${zone} and softly redirect ~30% of new arrivals to a neighboring gate; this holds the queue below the 90% threshold without a full closure.`
+        ? `Open a second screening lane in ${zone} and softly redirect ~30% of new arrivals to a neighboring gate; this holds the queue below the ${GEMINI_CFG.SEVERITY_THRESHOLDS.CRITICAL_CAPACITY_PCT}% threshold without a full closure.`
         : `Continue normal flow monitoring in ${zone}; current numbers are below escalation thresholds so a diversion would waste volunteer capacity elsewhere.`;
       const reasoningLine = isRepeat
         ? `A repeat report on the same zone is itself evidence that the situation is not improving — treating this identically to a first report would be ignoring that signal. Escalating the response type (not just repeating advice) is the correct move.`
@@ -252,7 +269,11 @@ VOLUNTEER SCRIPT: "Thanks for flagging this — I'll check and come right back t
     const apiKey = this.getApiKey();
     if (apiKey) {
       try {
-        await this._callRealGeminiSummary(apiKey, logEntries, onChunk);
+        const logText = logEntries.length
+          ? logEntries.slice().reverse().map((e, i) => `${i + 1}. [${e.severity}] ${e.text}`).join('\n')
+          : 'No entries logged this shift.';
+        const text = await this._callGeminiRaw(apiKey, SUMMARY_CONTRACT, `Shift log (chronological):\n${logText}`, GEMINI_CFG.GEMINI_MAX_TOKENS_SUMMARY, GEMINI_CFG.GEMINI_TEMPERATURE_SUMMARY);
+        await this._streamText(text, onChunk);
         return { mode: 'live' };
       } catch (error) {
         console.error('Gemini summary error, falling back:', error);
@@ -261,43 +282,6 @@ VOLUNTEER SCRIPT: "Thanks for flagging this — I'll check and come right back t
     }
     await this._streamText(this._composeSummary(logEntries), onChunk);
     return { mode: apiKey ? 'fallback' : 'offline' };
-  },
-
-  async _callRealGeminiSummary(apiKey, logEntries, onChunk) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`;
-    const logText = logEntries.length
-      ? logEntries.slice().reverse().map((e, i) => `${i + 1}. [${e.severity}] ${e.text}`).join('\n')
-      : 'No entries logged this shift.';
-
-    const requestBody = {
-      contents: [{ role: 'user', parts: [{ text: `Shift log (chronological):\n${logText}` }] }],
-      systemInstruction: { parts: [{ text: SUMMARY_CONTRACT }] },
-      generationConfig: { temperature: 0.5, maxOutputTokens: 400 }
-    };
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
-    let response;
-    try {
-      response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody),
-        signal: controller.signal
-      });
-    } finally {
-      clearTimeout(timeout);
-    }
-
-    if (!response.ok) {
-      let msg = `HTTP ${response.status}`;
-      try { msg = (await response.json()).error?.message || msg; } catch (_) {}
-      throw new Error(msg);
-    }
-    const data = await response.json();
-    const textResult = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!textResult) throw new Error('Empty response from Gemini API');
-    await this._streamText(textResult, onChunk);
   },
 
   _composeSummary(logEntries) {
